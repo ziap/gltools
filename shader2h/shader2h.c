@@ -121,7 +121,8 @@ int process_shader(const char *name) {
   char *shader_str = read_file(name);
   if (!shader_str) return 1;
 
-  fprintf(stderr, "INFO: Loaded %s shader `%s`\n", shader_type_name[shader_type], name);
+  fprintf(stderr, "INFO: Loaded %s shader `%s`\n",
+          shader_type_name[shader_type], name);
 
   int failed = 0;
 
@@ -171,7 +172,17 @@ int process_shader(const char *name) {
   char *header_name = malloc(len + 1);
   for (size_t i = 0; i < len; ++i) {
     char ch = name[i];
-    if (ch >= 'a' && ch <= 'z') {
+    if (ch >= '0' && ch <= '9') {
+      if (i == 0) {
+        fprintf(stderr, "WARN: The first character of `%s` is a number, "
+                "it is replaced with `_` in the output header", name);
+        var_name[i] = '_';
+        header_name[i] = '_';
+      } else {
+        var_name[i] = ch;
+        header_name[i] = ch;
+      }
+    } else if (ch >= 'a' && ch <= 'z') {
       var_name[i] = ch;
       header_name[i] = ch + 'A' - 'a';
     } else if (ch >= 'A' && ch <= 'Z') {

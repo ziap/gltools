@@ -2,8 +2,10 @@
 
 CC="${CC:-clang}"
 
-CFLAGS="-std=c99 -Wall -Wextra -pedantic"
-LDLIBS="-lEGL -lGLESv2"
+DEPS="egl glesv2"
+
+CFLAGS="-std=c99 -Wall -Wextra -pedantic `pkg-config --cflags $DEPS`"
+LDLIBS="`pkg-config --libs $DEPS`"
 
 BUILD_FLAGS="-O3 -march=native -mtune=native -s"
 DEBUG_FLAGS="-Og -ggdb"
