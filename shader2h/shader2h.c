@@ -31,6 +31,79 @@
     }                                                                          \
   } while (0)
 
+#define ARENA_CAP (1 << 16)
+typedef struct ArenaNode ArenaNode;
+struct ArenaNode {
+  size_t len;
+  ArenaNode *prev;
+  char data[];
+};
+
+typedef struct {
+  ArenaNode *free_arenas;
+  ArenaNode *current;
+  ArenaNode *last;
+} Arena;
+
+Arena Arena_create(void) {
+  ArenaNode *node = malloc(sizeof(ArenaNode) + ARENA_CAP);
+  node->len = 0;
+  node->prev = NULL;
+  return (Arena) {
+    .free_arenas = NULL,
+    .current = node,
+    .last    = node
+  };
+}
+
+void Arena_deinit(Arena arena) {
+  arena.last->prev = arena.free_arenas;
+  ArenaNode *node = arena.current;
+  while (node) {
+    ArenaNode *prev = node->prev;
+    free(node);
+    node = prev;
+  }
+}
+
+void Arena_reset(Arena *arena) {
+  if (arena->current != arena->last) {
+    arena->last->prev = arena->free_arenas;
+    arena->free_arenas = arena->current->prev;
+    arena->current->prev = NULL;
+    arena->last = arena->current;
+  }
+  arena->current->len = 0;
+}
+
+void Arena_expand(Arena *arena) {
+  ArenaNode *node;
+  if (!arena->free_arenas) {
+    node = malloc(sizeof(ArenaNode) + ARENA_CAP);
+  } else {
+    node = arena->free_arenas;
+    arena->free_arenas = arena->free_arenas->prev;
+  }
+
+  node->len = 0;
+  node->prev = arena->current;
+  arena->current = node;
+}
+
+char *Arena_alloc_str(Arena *arena, size_t size) {
+  if (size > ARENA_CAP) {
+    ArenaNode *node = malloc(sizeof(ArenaNode) + size);
+    node->len = size;
+    node->prev = arena->current;
+    arena->current = node;
+    return node->data;
+  }
+  if (arena->current->len + size > ARENA_CAP) Arena_expand(arena);
+  char *data = arena->current->data + arena->current->len;
+  arena->current->len += size;
+  return data;
+}
+
 // Do this to make it easier to add more types, e.g compute or geometry
 // But currently it's not possible because this is GLES2
 typedef enum {
@@ -70,7 +143,7 @@ ShaderType get_type_from_ext(const char *path, size_t len) {
   return -1;
 }
 
-char* read_file(const char *file_path) {
+char* read_file(const char *file_path, Arena *arena) {
   char *buf = NULL;
   FILE *f = fopen(file_path, "rb");
 
@@ -83,8 +156,7 @@ char* read_file(const char *file_path) {
 
   if (fseek(f, 0, SEEK_SET) < 0) goto fail;
 
-  buf = malloc(len + 1);
-  if (!buf) goto fail;
+  buf = Arena_alloc_str(arena, len + 1);
 
   fread(buf, 1, len, f);
   if (ferror(f)) goto fail;
@@ -100,11 +172,10 @@ fail:
   }
 
   if (f) fclose(f);
-  if (buf) free(buf);
   return NULL;
 }
 
-int process_shader(const char *name) {
+int process_shader(const char *name, Arena *arena) {
   size_t len = strlen(name);
 
   ShaderType shader_type = get_type_from_ext(name, len);
@@ -118,7 +189,7 @@ int process_shader(const char *name) {
     return 1;
   }
 
-  char *shader_str = read_file(name);
+  char *shader_str = read_file(name, arena);
   if (!shader_str) return 1;
 
   fprintf(stderr, "INFO: Loaded %s shader `%s`\n",
@@ -138,9 +209,10 @@ int process_shader(const char *name) {
     GLint max_length = 0;
     glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &max_length);
 
-    char *error_msg = malloc(max_length);
+    char *error_msg = Arena_alloc_str(arena, max_length);
     glGetShaderInfoLog(shader, max_length, &max_length, error_msg);
 
+    // Insert the file name to every line of the error message and print them
     const char* last_newline = error_msg;
     for (const char *c = error_msg; *c; ++c) {
       if (*c == '\n') {
@@ -149,13 +221,12 @@ int process_shader(const char *name) {
         last_newline = c + 1;
       }
     }
-    free(error_msg);
     failed = 1;
     goto cleanup;
   }
 
   const char ext[] = ".h";
-  char *out_file = malloc(len + sizeof(ext));
+  char *out_file = Arena_alloc_str(arena, len + sizeof(ext));
   memcpy(out_file, name, len);
   memcpy(out_file + len, ext, sizeof(ext));
 
@@ -163,13 +234,12 @@ int process_shader(const char *name) {
   if (!out) {
     fprintf(stderr, "ERROR: Failed to open file `%s`: %s\n", out_file,
             strerror(errno));
-    free(out_file);
     failed = 1;
     goto cleanup;
   }
 
-  char *var_name = malloc(len + 1);
-  char *header_name = malloc(len + 1);
+  char *var_name = Arena_alloc_str(arena, len + 1);
+  char *header_name = Arena_alloc_str(arena, len + 1);
   for (size_t i = 0; i < len; ++i) {
     char ch = name[i];
     if (ch >= '0' && ch <= '9') {
@@ -213,14 +283,10 @@ int process_shader(const char *name) {
   fprintf(out, "#endif\n");
 
   fprintf(stderr, "INFO: Shader written to file `%s`\n", out_file);
-  free(out_file);
-  free(var_name);
-  free(header_name);
   fclose(out);
 
 cleanup:
   glDeleteShader(shader);
-  free(shader_str);
   return failed;
 }
 
@@ -246,12 +312,18 @@ int main(int argc, char *argv[]) {
 
   int failed = 0;
 
+  Arena arena = Arena_create();
+
   for (int i = 1; i < argc; ++i) {
-    if (process_shader(argv[i])) {
+    if (process_shader(argv[i], &arena)) {
       failed = 1;
       break;
     }
+
+    Arena_reset(&arena);
   }
+
+  Arena_deinit(arena);
 
   ASSERT(eglDestroyContext(eglDpy, eglCtx));
   ASSERT(eglTerminate(eglDpy));
